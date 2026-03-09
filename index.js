@@ -12,6 +12,17 @@ const caminhoDB = "./database/dados.json"
 
 const GRUPO_PERMITIDO = "120363408102479565@g.us"
 
+const nomesUsuarios = {
+    "239972909056127": "Samira",
+    "272327149391946": "Murilo"
+}
+
+const palavrasEntrada = ["salario", "extra", "freela", "bonus"]
+
+function nomeExibicaoPorId(id) {
+    return nomesUsuarios[id] || id
+}
+
 async function carregarDados() {
 
     if (!await fs.pathExists(caminhoDB)) {
@@ -29,10 +40,6 @@ async function carregarDados() {
 
 async function salvarDados(dados) {
     await fs.writeJson(caminhoDB, dados, { spaces: 2 })
-}
-
-function obterNomeUsuario(jid) {
-    return jid.split("@")[0]
 }
 
 function obterMesAtual() {
@@ -60,22 +67,18 @@ async function iniciarBot() {
         const { connection, qr, lastDisconnect } = update
 
         if (qr) {
-
-            console.log("\n📱 Escaneie o QR Code:\n")
-
+            console.log("\nEscaneie o QR:\n")
             qrcode.generate(qr, { small: true })
         }
 
         if (connection === "open") {
-            console.log("\n✅ Bot conectado ao WhatsApp\n")
+            console.log("Bot conectado")
         }
 
         if (connection === "close") {
 
             const shouldReconnect =
                 lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
-
-            console.log("Conexão fechada")
 
             if (shouldReconnect) iniciarBot()
         }
@@ -95,6 +98,8 @@ async function iniciarBot() {
 
         const sender = msg.key.participant || from
 
+        const usuario = sender.split("@")[0]
+
         const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
@@ -104,82 +109,143 @@ async function iniciarBot() {
 
         const dados = await carregarDados()
 
-        const usuario = obterNomeUsuario(sender)
-
         if (!dados.usuarios[usuario]) {
 
             dados.usuarios[usuario] = {
-                saldo: 0,
-                gastos: [],
-                entradas: []
+                entradas: [],
+                gastos: []
             }
 
         }
 
-        const user = dados.usuarios[usuario]
+        const partes = mensagem.split(" ")
 
-        console.log(usuario, ":", mensagem)
+        // RESET TOTAL
+        if (mensagem === "reset") {
 
-        // SALDO
-        if (mensagem === "saldo") {
+            const novo = {
+                usuarios: {}
+            }
+
+            await salvarDados(novo)
 
             await sock.sendMessage(from, {
-                text: `💰 Seu saldo atual: R$${user.saldo}`
+                text: "🧹 Todos os dados foram apagados."
             })
 
             return
         }
 
-        // RELATORIO
+        // RESET POR MES
+        if (partes[0] === "reset" && partes[1] === "mes") {
+
+            const mesApagar = partes[2]
+
+            if (!mesApagar) {
+
+                await sock.sendMessage(from, {
+                    text: "Use: reset mes 3-2026"
+                })
+
+                return
+            }
+
+            const dados = await carregarDados()
+
+            for (const user in dados.usuarios) {
+
+                dados.usuarios[user].entradas =
+                    dados.usuarios[user].entradas.filter(e => e.mes !== mesApagar)
+
+                dados.usuarios[user].gastos =
+                    dados.usuarios[user].gastos.filter(g => g.mes !== mesApagar)
+
+            }
+
+            await salvarDados(dados)
+
+            await sock.sendMessage(from, {
+                text: `🧹 Dados do mês ${mesApagar} apagados.`
+            })
+
+            return
+        }
+
+        const nome = partes[0]
+        const valor = parseFloat(partes[1])
+
         if (mensagem === "relatorio") {
 
             const mes = obterMesAtual()
 
-            const gastosMes = user.gastos.filter(g => g.mes === mes)
-            const entradasMes = user.entradas.filter(e => e.mes === mes)
-
-            let totalGastos = 0
             let totalEntradas = 0
+            let totalGastos = 0
 
-            gastosMes.forEach(g => totalGastos += g.valor)
-            entradasMes.forEach(e => totalEntradas += e.valor)
+            let gastosCategoria = {}
 
-            let texto = `📊 RELATÓRIO DO MÊS\n\n`
+            let relatorioUsuarios = ""
 
-            texto += `💰 Entradas:\n`
+            for (const user in dados.usuarios) {
 
-            entradasMes.forEach(e => {
-                texto += `+ ${e.nome} R$${e.valor}\n`
-            })
+                const u = dados.usuarios[user]
 
-            texto += `\n💸 Gastos:\n`
+                const nomeMostrar = nomeExibicaoPorId(user)
 
-            gastosMes.forEach(g => {
-                texto += `- ${g.nome} R$${g.valor}\n`
-            })
+                const entradasMes = u.entradas.filter(e => e.mes === mes)
+                const gastosMes = u.gastos.filter(g => g.mes === mes)
 
-            texto += `\n💵 Total entradas: R$${totalEntradas}`
+                let somaEntradas = 0
+                let somaGastos = 0
+
+                entradasMes.forEach(e => somaEntradas += e.valor)
+
+                gastosMes.forEach(g => {
+
+                    somaGastos += g.valor
+
+                    if (!gastosCategoria[g.nome]) {
+                        gastosCategoria[g.nome] = 0
+                    }
+
+                    gastosCategoria[g.nome] += g.valor
+                })
+
+                totalEntradas += somaEntradas
+                totalGastos += somaGastos
+
+                relatorioUsuarios += `👤 ${nomeMostrar}\n`
+                relatorioUsuarios += `Entradas: R$${somaEntradas}\n`
+                relatorioUsuarios += `Gastos: R$${somaGastos}\n\n`
+            }
+
+            let texto = "📊 RELATÓRIO DO MÊS\n\n"
+
+            texto += relatorioUsuarios
+
+            texto += "💸 Gastos por categoria\n"
+
+            for (const cat in gastosCategoria) {
+                texto += `${cat}: R$${gastosCategoria[cat]}\n`
+            }
+
+            const sobra = totalEntradas - totalGastos
+
+            texto += `\n💰 Total entradas: R$${totalEntradas}`
             texto += `\n💸 Total gastos: R$${totalGastos}`
-            texto += `\n\nSaldo atual: R$${user.saldo}`
+            texto += `\n🏦 Sobrou: R$${sobra}`
 
             await sock.sendMessage(from, { text: texto })
 
             return
         }
 
-        const partes = mensagem.split(" ")
-
-        const nome = partes[0]
-        const valor = parseFloat(partes[1])
+        if (isNaN(valor)) return
 
         const mes = obterMesAtual()
 
-        // SALARIO
-        if (nome === "salario" && !isNaN(valor)) {
+        if (palavrasEntrada.includes(nome)) {
 
-            user.saldo += valor
-
-            user.entradas.push({
+            dados.usuarios[usuario].entradas.push({
                 nome,
                 valor,
                 mes
@@ -188,30 +254,23 @@ async function iniciarBot() {
             await salvarDados(dados)
 
             await sock.sendMessage(from, {
-                text: `💰 Salário registrado: R$${valor}\nSaldo atual: R$${user.saldo}`
+                text: `💰 Entrada registrada: ${nome} R$${valor}`
             })
 
             return
         }
 
-        // GASTO
-        if (!isNaN(valor)) {
+        dados.usuarios[usuario].gastos.push({
+            nome,
+            valor,
+            mes
+        })
 
-            user.saldo -= valor
+        await salvarDados(dados)
 
-            user.gastos.push({
-                nome,
-                valor,
-                mes
-            })
-
-            await salvarDados(dados)
-
-            await sock.sendMessage(from, {
-                text: `🧾 Gasto registrado: ${nome} R$${valor}\nSaldo atual: R$${user.saldo}`
-            })
-
-        }
+        await sock.sendMessage(from, {
+            text: `💸 Gasto registrado: ${nome} R$${valor}`
+        })
 
     })
 

@@ -1,4 +1,19 @@
-node_modules
-auth
-database
+# dependências
+node_modules/
+
+# sessão do whatsapp
+auth/
+
+# banco de dados local
+database/
+
+# variáveis de ambiente
 .env
+
+# logs
+logs
+*.log
+
+# arquivos do sistema
+.DS_Store
+Thumbs.db
