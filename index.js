@@ -97,7 +97,6 @@ async function iniciarBot() {
         if (from !== GRUPO_PERMITIDO) return
 
         const sender = msg.key.participant || from
-
         const usuario = sender.split("@")[0]
 
         const text =
@@ -119,6 +118,37 @@ async function iniciarBot() {
         }
 
         const partes = mensagem.split(" ")
+
+        // COMANDOS
+        if (mensagem === "comandos") {
+
+            const texto = `🤖 COMANDOS DISPONÍVEIS
+
+💰 Entradas
+salario 1000
+extra 200
+freela 300
+bonus 100
+
+💸 Gastos
+mercado 150
+uber 30
+pizza 60
+
+📊 Relatórios
+relatorio → mostra resumo do mês
+
+🧹 Limpeza
+reset → apaga todos dados
+reset mes 3-2026 → apaga um mês específico
+
+📋 Ajuda
+comandos → lista todos comandos
+`
+
+            await sock.sendMessage(from, { text: texto })
+            return
+        }
 
         // RESET TOTAL
         if (mensagem === "reset") {
@@ -174,6 +204,7 @@ async function iniciarBot() {
         const nome = partes[0]
         const valor = parseFloat(partes[1])
 
+        // RELATORIO
         if (mensagem === "relatorio") {
 
             const mes = obterMesAtual()
@@ -188,7 +219,6 @@ async function iniciarBot() {
             for (const user in dados.usuarios) {
 
                 const u = dados.usuarios[user]
-
                 const nomeMostrar = nomeExibicaoPorId(user)
 
                 const entradasMes = u.entradas.filter(e => e.mes === mes)
@@ -243,6 +273,7 @@ async function iniciarBot() {
 
         const mes = obterMesAtual()
 
+        // ENTRADAS
         if (palavrasEntrada.includes(nome)) {
 
             dados.usuarios[usuario].entradas.push({
@@ -260,6 +291,7 @@ async function iniciarBot() {
             return
         }
 
+        // GASTOS
         dados.usuarios[usuario].gastos.push({
             nome,
             valor,
