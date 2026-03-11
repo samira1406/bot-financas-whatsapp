@@ -1,12 +1,14 @@
-import makeWASocket, {
-    useMultiFileAuthState,
-    fetchLatestBaileysVersion,
-    DisconnectReason
-} from "@whiskeysockets/baileys"
-
+import baileys from "@whiskeysockets/baileys"
 import P from "pino"
 import qrcode from "qrcode-terminal"
 import fs from "fs-extra"
+
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion
+} = baileys
 
 const caminhoDB = "./database/dados.json"
 
@@ -19,10 +21,6 @@ const nomesUsuarios = {
 
 const palavrasEntrada = ["salario", "extra", "freela", "bonus"]
 
-function nomeExibicaoPorId(id) {
-    return nomesUsuarios[id] || id
-}
-
 async function carregarDados() {
 
     if (!await fs.pathExists(caminhoDB)) {
@@ -31,7 +29,7 @@ async function carregarDados() {
             usuarios: {}
         }
 
-        await fs.writeJson(caminhoDB, inicial, { spaces: 2 })
+        await fs.outputJson(caminhoDB, inicial, { spaces: 2 })
         return inicial
     }
 
@@ -40,6 +38,15 @@ async function carregarDados() {
 
 async function salvarDados(dados) {
     await fs.writeJson(caminhoDB, dados, { spaces: 2 })
+}
+
+function obterNomeUsuario(jid) {
+
+    const numero = jid.split("@")[0]
+
+    if (nomesUsuarios[numero]) return nomesUsuarios[numero]
+
+    return numero
 }
 
 function obterMesAtual() {
@@ -52,12 +59,16 @@ function obterMesAtual() {
 async function iniciarBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState("auth")
+
     const { version } = await fetchLatestBaileysVersion()
 
+    console.log("Versão WA:", version)
+
     const sock = makeWASocket({
-        version,
         auth: state,
-        logger: P({ level: "silent" })
+        logger: P({ level: "silent" }),
+        version,
+        browser: ["Windows", "Chrome", "120.0.0"]
     })
 
     sock.ev.on("creds.update", saveCreds)
@@ -67,12 +78,16 @@ async function iniciarBot() {
         const { connection, qr, lastDisconnect } = update
 
         if (qr) {
+
             console.log("\nEscaneie o QR:\n")
             qrcode.generate(qr, { small: true })
+
         }
 
         if (connection === "open") {
-            console.log("Bot conectado")
+
+            console.log("✅ Bot conectado")
+
         }
 
         if (connection === "close") {
@@ -80,7 +95,17 @@ async function iniciarBot() {
             const shouldReconnect =
                 lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
 
-            if (shouldReconnect) iniciarBot()
+            if (shouldReconnect) {
+
+                console.log("🔄 Reconectando...")
+                iniciarBot()
+
+            } else {
+
+                console.log("❌ Sessão encerrada")
+
+            }
+
         }
 
     })
@@ -98,8 +123,6 @@ async function iniciarBot() {
 
         const sender = msg.key.participant || from
 
-        const usuario = sender.split("@")[0]
-
         const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
@@ -108,6 +131,8 @@ async function iniciarBot() {
         const mensagem = text.toLowerCase().trim()
 
         const dados = await carregarDados()
+
+        const usuario = obterNomeUsuario(sender)
 
         if (!dados.usuarios[usuario]) {
 
@@ -120,59 +145,24 @@ async function iniciarBot() {
 
         const partes = mensagem.split(" ")
 
-        // RESET TOTAL
-        if (mensagem === "reset") {
-
-            const novo = {
-                usuarios: {}
-            }
-
-            await salvarDados(novo)
+        if (mensagem === "comandos") {
 
             await sock.sendMessage(from, {
-                text: "🧹 Todos os dados foram apagados."
+                text:
+`📋 COMANDOS
+
+Registrar gasto:
+ex: uber 30
+
+Registrar entrada:
+ex: salario 5000
+
+Ver relatório:
+relatorio`
             })
 
             return
         }
-
-        // RESET POR MES
-        if (partes[0] === "reset" && partes[1] === "mes") {
-
-            const mesApagar = partes[2]
-
-            if (!mesApagar) {
-
-                await sock.sendMessage(from, {
-                    text: "Use: reset mes 3-2026"
-                })
-
-                return
-            }
-
-            const dados = await carregarDados()
-
-            for (const user in dados.usuarios) {
-
-                dados.usuarios[user].entradas =
-                    dados.usuarios[user].entradas.filter(e => e.mes !== mesApagar)
-
-                dados.usuarios[user].gastos =
-                    dados.usuarios[user].gastos.filter(g => g.mes !== mesApagar)
-
-            }
-
-            await salvarDados(dados)
-
-            await sock.sendMessage(from, {
-                text: `🧹 Dados do mês ${mesApagar} apagados.`
-            })
-
-            return
-        }
-
-        const nome = partes[0]
-        const valor = parseFloat(partes[1])
 
         if (mensagem === "relatorio") {
 
@@ -181,63 +171,34 @@ async function iniciarBot() {
             let totalEntradas = 0
             let totalGastos = 0
 
-            let gastosCategoria = {}
-
-            let relatorioUsuarios = ""
-
             for (const user in dados.usuarios) {
 
                 const u = dados.usuarios[user]
 
-                const nomeMostrar = nomeExibicaoPorId(user)
-
                 const entradasMes = u.entradas.filter(e => e.mes === mes)
                 const gastosMes = u.gastos.filter(g => g.mes === mes)
 
-                let somaEntradas = 0
-                let somaGastos = 0
+                entradasMes.forEach(e => totalEntradas += e.valor)
+                gastosMes.forEach(g => totalGastos += g.valor)
 
-                entradasMes.forEach(e => somaEntradas += e.valor)
-
-                gastosMes.forEach(g => {
-
-                    somaGastos += g.valor
-
-                    if (!gastosCategoria[g.nome]) {
-                        gastosCategoria[g.nome] = 0
-                    }
-
-                    gastosCategoria[g.nome] += g.valor
-                })
-
-                totalEntradas += somaEntradas
-                totalGastos += somaGastos
-
-                relatorioUsuarios += `👤 ${nomeMostrar}\n`
-                relatorioUsuarios += `Entradas: R$${somaEntradas}\n`
-                relatorioUsuarios += `Gastos: R$${somaGastos}\n\n`
             }
 
-            let texto = "📊 RELATÓRIO DO MÊS\n\n"
+            const saldo = totalEntradas - totalGastos
 
-            texto += relatorioUsuarios
+            await sock.sendMessage(from, {
+                text:
+`📊 RELATÓRIO
 
-            texto += "💸 Gastos por categoria\n"
-
-            for (const cat in gastosCategoria) {
-                texto += `${cat}: R$${gastosCategoria[cat]}\n`
-            }
-
-            const sobra = totalEntradas - totalGastos
-
-            texto += `\n💰 Total entradas: R$${totalEntradas}`
-            texto += `\n💸 Total gastos: R$${totalGastos}`
-            texto += `\n🏦 Sobrou: R$${sobra}`
-
-            await sock.sendMessage(from, { text: texto })
+Entradas: R$${totalEntradas}
+Gastos: R$${totalGastos}
+Saldo: R$${saldo}`
+            })
 
             return
         }
+
+        const nome = partes[0]
+        const valor = parseFloat(partes[1])
 
         if (isNaN(valor)) return
 
