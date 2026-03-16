@@ -5,7 +5,7 @@ node_modules/
 auth/
 
 # banco de dados local
-database/
+database/dados.json
 
 # variáveis de ambiente
 .env
