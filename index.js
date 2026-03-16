@@ -32,6 +32,44 @@ function obterMesAtual() {
   return `${data.getMonth() + 1}-${data.getFullYear()}`
 }
 
+function inicioDoDia(data = new Date()) {
+  const d = new Date(data)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function inicioDaSemana(data = new Date()) {
+  const d = new Date(data)
+  const dia = d.getDay()
+  const diferenca = dia === 0 ? 6 : dia - 1
+  d.setDate(d.getDate() - diferenca)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function inicioDoMes(data = new Date()) {
+  const d = new Date(data)
+  d.setDate(1)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function formatarValor(valor) {
+  return Number(valor).toFixed(2)
+}
+
+function somarLancamentos(lista) {
+  return lista.reduce((total, item) => total + item.valor, 0)
+}
+
+function montarDetalhes(lista) {
+  if (!lista.length) return "Nenhum lançamento."
+
+  return lista
+    .map((item, index) => `${index + 1}. ${item.nome} - R$ ${formatarValor(item.valor)}`)
+    .join("\n")
+}
+
 async function enviarMensagemSegura(sock, jid, text) {
   try {
     await sock.sendMessage(jid, { text })
@@ -118,6 +156,8 @@ async function iniciarBot() {
           nome: null,
           aguardandoNome: true,
           ultimoMessageIdProcessado: messageId,
+          aguardandoRespostaCaixinha: false,
+          valorSugeridoCaixinha: 0,
           entradas: [],
           gastos: []
         }
@@ -153,8 +193,59 @@ async function iniciarBot() {
         return
       }
 
-      const usuario = dados.usuarios[usuarioId].nome
+      const usuarioDados = dados.usuarios[usuarioId]
+      const usuario = usuarioDados.nome
       const mensagemLower = mensagem.toLowerCase()
+      const mes = obterMesAtual()
+
+      if (usuarioDados.aguardandoRespostaCaixinha) {
+        if (mensagemLower === "sim") {
+          const valorCaixinha = usuarioDados.valorSugeridoCaixinha || 0
+
+          if (valorCaixinha > 0) {
+            usuarioDados.gastos.push({
+              nome: "caixinha",
+              valor: valorCaixinha,
+              mes,
+              data: new Date().toISOString(),
+              timestamp: Date.now()
+            })
+          }
+
+          usuarioDados.aguardandoRespostaCaixinha = false
+          usuarioDados.valorSugeridoCaixinha = 0
+
+          await salvarDados(dados)
+
+          await enviarMensagemSegura(
+            sock,
+            from,
+            `💰 ${usuario}, perfeito. Registrei R$ ${formatarValor(valorCaixinha)} como valor guardado na caixinha.`
+          )
+          return
+        }
+
+        if (mensagemLower === "nao" || mensagemLower === "não") {
+          usuarioDados.aguardandoRespostaCaixinha = false
+          usuarioDados.valorSugeridoCaixinha = 0
+
+          await salvarDados(dados)
+
+          await enviarMensagemSegura(
+            sock,
+            from,
+            `👌 ${usuario}, tudo certo. Não vou guardar nada na caixinha agora.`
+          )
+          return
+        }
+
+        await enviarMensagemSegura(
+          sock,
+          from,
+          `❓ ${usuario}, responde só com *sim* ou *não* para eu saber se vamos guardar o valor sugerido na caixinha.`
+        )
+        return
+      }
 
       if (mensagemLower === "comandos") {
         await enviarMensagemSegura(
@@ -170,41 +261,248 @@ Registrar entrada:
 ex: salario 5000
 ex: freela 800
 
-Ver relatório:
-relatorio`
+Relatórios:
+relatorio
+relatorio geral
+
+Apagar lançamentos:
+apagar ultimo
+apagar hoje
+apagar semana
+apagar mes`
         )
         return
       }
 
       if (mensagemLower === "relatorio") {
-        const mes = obterMesAtual()
-        let totalEntradas = 0
-        let totalGastos = 0
+        const entradasMes = usuarioDados.entradas.filter((e) => e.mes === mes)
+        const gastosMes = usuarioDados.gastos.filter((g) => g.mes === mes)
+
+        const totalEntradas = somarLancamentos(entradasMes)
+        const totalGastos = somarLancamentos(gastosMes)
+        const saldo = totalEntradas - totalGastos
+
+        let textoRelatorio = `📊 RELATÓRIO MENSAL - ${usuario}
+
+💰 ENTRADAS
+${montarDetalhes(entradasMes)}
+
+Total de entradas: R$ ${formatarValor(totalEntradas)}
+
+💸 GASTOS
+${montarDetalhes(gastosMes)}
+
+Total de gastos: R$ ${formatarValor(totalGastos)}
+
+🧾 SALDO
+Saldo do mês: R$ ${formatarValor(saldo)}`
+
+        if (saldo > 0) {
+          const valorSugerido = saldo * 0.3
+
+          usuarioDados.aguardandoRespostaCaixinha = true
+          usuarioDados.valorSugeridoCaixinha = valorSugerido
+
+          await salvarDados(dados)
+
+          textoRelatorio += `
+
+🏦 SOBROU DINHEIRO
+Sobraram R$ ${formatarValor(saldo)} neste mês.
+
+Minha sugestão é guardar 30% desse valor na caixinha para render:
+R$ ${formatarValor(valorSugerido)}
+
+Quer que eu registre esse valor na caixinha?
+Responda com *sim* ou *não*.`
+        } else {
+          usuarioDados.aguardandoRespostaCaixinha = false
+          usuarioDados.valorSugeridoCaixinha = 0
+          await salvarDados(dados)
+        }
+
+        await enviarMensagemSegura(sock, from, textoRelatorio)
+        return
+      }
+
+      if (mensagemLower === "relatorio geral") {
+        let totalEntradasGeral = 0
+        let totalGastosGeral = 0
+        let textoPessoas = ""
+        const rankingGastos = []
 
         for (const id in dados.usuarios) {
           const u = dados.usuarios[id]
-          const entradasMes = u.entradas.filter(e => e.mes === mes)
-          const gastosMes = u.gastos.filter(g => g.mes === mes)
+          const nomePessoa = u.nome || id
 
-          entradasMes.forEach(e => {
-            totalEntradas += e.valor
+          const entradasMes = u.entradas.filter((e) => e.mes === mes)
+          const gastosMes = u.gastos.filter((g) => g.mes === mes)
+
+          const totalEntradasPessoa = somarLancamentos(entradasMes)
+          const totalGastosPessoa = somarLancamentos(gastosMes)
+          const saldoPessoa = totalEntradasPessoa - totalGastosPessoa
+
+          totalEntradasGeral += totalEntradasPessoa
+          totalGastosGeral += totalGastosPessoa
+
+          rankingGastos.push({
+            nome: nomePessoa,
+            totalGastos: totalGastosPessoa
           })
 
-          gastosMes.forEach(g => {
-            totalGastos += g.valor
-          })
+          textoPessoas += `👤 ${nomePessoa}
+
+Entradas:
+${montarDetalhes(entradasMes)}
+
+Total entradas: R$ ${formatarValor(totalEntradasPessoa)}
+
+Gastos:
+${montarDetalhes(gastosMes)}
+
+Total gastos: R$ ${formatarValor(totalGastosPessoa)}
+Saldo: R$ ${formatarValor(saldoPessoa)}
+
+──────────────
+`
         }
 
-        const saldo = totalEntradas - totalGastos
+        const saldoGeral = totalEntradasGeral - totalGastosGeral
+
+        const textoRelatorioGeral = `📊 RELATÓRIO GERAL DO MÊS
+
+💰 Total geral de entradas: R$ ${formatarValor(totalEntradasGeral)}
+💸 Total geral de gastos: R$ ${formatarValor(totalGastosGeral)}
+🧾 Saldo geral: R$ ${formatarValor(saldoGeral)}
+
+${textoPessoas.trim()}`
+
+        await enviarMensagemSegura(sock, from, textoRelatorioGeral)
+
+        rankingGastos.sort((a, b) => b.totalGastos - a.totalGastos)
+
+        const rankingTexto = rankingGastos.length
+          ? rankingGastos
+              .map((item, index) => `${index + 1}. ${item.nome} — R$ ${formatarValor(item.totalGastos)}`)
+              .join("\n")
+          : "Nenhum gasto registrado."
 
         await enviarMensagemSegura(
           sock,
           from,
-          `📊 RELATÓRIO
+          `🏆 QUEM MAIS GASTOU NO MÊS
 
-Entradas: R$ ${totalEntradas.toFixed(2)}
-Gastos: R$ ${totalGastos.toFixed(2)}
-Saldo: R$ ${saldo.toFixed(2)}`
+${rankingTexto}`
+        )
+
+        return
+      }
+
+      if (mensagemLower === "apagar ultimo") {
+        const entradas = usuarioDados.entradas
+        const gastos = usuarioDados.gastos
+
+        const ultimaEntrada = entradas[entradas.length - 1]
+        const ultimoGasto = gastos[gastos.length - 1]
+
+        if (!ultimaEntrada && !ultimoGasto) {
+          await enviarMensagemSegura(
+            sock,
+            from,
+            "⚠️ Você não tem lançamentos para apagar."
+          )
+          return
+        }
+
+        let itemRemovido = null
+        let tipoRemovido = ""
+
+        if (ultimaEntrada && ultimoGasto) {
+          const tsEntrada = ultimaEntrada.timestamp || 0
+          const tsGasto = ultimoGasto.timestamp || 0
+
+          if (tsEntrada >= tsGasto) {
+            itemRemovido = entradas.pop()
+            tipoRemovido = "entrada"
+          } else {
+            itemRemovido = gastos.pop()
+            tipoRemovido = "gasto"
+          }
+        } else if (ultimaEntrada) {
+          itemRemovido = entradas.pop()
+          tipoRemovido = "entrada"
+        } else {
+          itemRemovido = gastos.pop()
+          tipoRemovido = "gasto"
+        }
+
+        await salvarDados(dados)
+
+        await enviarMensagemSegura(
+          sock,
+          from,
+          `🗑️ ${usuario}, apaguei o último ${tipoRemovido}: ${itemRemovido.nome} R$ ${formatarValor(itemRemovido.valor)}`
+        )
+        return
+      }
+
+      if (
+        mensagemLower === "apagar hoje" ||
+        mensagemLower === "apagar semana" ||
+        mensagemLower === "apagar mes"
+      ) {
+        let limite = 0
+        let labelPeriodo = ""
+
+        if (mensagemLower === "apagar hoje") {
+          limite = inicioDoDia()
+          labelPeriodo = "de hoje"
+        }
+
+        if (mensagemLower === "apagar semana") {
+          limite = inicioDaSemana()
+          labelPeriodo = "desta semana"
+        }
+
+        if (mensagemLower === "apagar mes") {
+          limite = inicioDoMes()
+          labelPeriodo = "deste mês"
+        }
+
+        const totalEntradasAntes = usuarioDados.entradas.length
+        const totalGastosAntes = usuarioDados.gastos.length
+
+        usuarioDados.entradas = usuarioDados.entradas.filter((item) => {
+          const ts = item.timestamp || 0
+          return ts < limite
+        })
+
+        usuarioDados.gastos = usuarioDados.gastos.filter((item) => {
+          const ts = item.timestamp || 0
+          return ts < limite
+        })
+
+        const entradasApagadas = totalEntradasAntes - usuarioDados.entradas.length
+        const gastosApagados = totalGastosAntes - usuarioDados.gastos.length
+        const totalApagados = entradasApagadas + gastosApagados
+
+        if (totalApagados === 0) {
+          await enviarMensagemSegura(
+            sock,
+            from,
+            `⚠️ ${usuario}, não encontrei lançamentos ${labelPeriodo} para apagar.`
+          )
+          return
+        }
+
+        await salvarDados(dados)
+
+        await enviarMensagemSegura(
+          sock,
+          from,
+          `🗑️ ${usuario}, apaguei ${totalApagados} lançamento(s) ${labelPeriodo}.
+Entradas apagadas: ${entradasApagadas}
+Gastos apagados: ${gastosApagados}`
         )
         return
       }
@@ -217,13 +515,13 @@ Saldo: R$ ${saldo.toFixed(2)}`
 
       if (isNaN(valor)) return
 
-      const mes = obterMesAtual()
-
       if (palavrasEntrada.includes(nome)) {
-        dados.usuarios[usuarioId].entradas.push({
+        usuarioDados.entradas.push({
           nome,
           valor,
-          mes
+          mes,
+          data: new Date().toISOString(),
+          timestamp: Date.now()
         })
 
         await salvarDados(dados)
@@ -231,15 +529,17 @@ Saldo: R$ ${saldo.toFixed(2)}`
         await enviarMensagemSegura(
           sock,
           from,
-          `💰 ${usuario}, entrada registrada: ${nome} R$ ${valor.toFixed(2)}`
+          `💰 ${usuario}, entrada registrada: ${nome} R$ ${formatarValor(valor)}`
         )
         return
       }
 
-      dados.usuarios[usuarioId].gastos.push({
+      usuarioDados.gastos.push({
         nome,
         valor,
-        mes
+        mes,
+        data: new Date().toISOString(),
+        timestamp: Date.now()
       })
 
       await salvarDados(dados)
@@ -247,7 +547,7 @@ Saldo: R$ ${saldo.toFixed(2)}`
       await enviarMensagemSegura(
         sock,
         from,
-        `💸 ${usuario}, gasto registrado: ${nome} R$ ${valor.toFixed(2)}`
+        `💸 ${usuario}, gasto registrado: ${nome} R$ ${formatarValor(valor)}`
       )
     } catch (error) {
       console.error("Erro ao processar mensagem:", error)
